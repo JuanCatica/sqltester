@@ -3,7 +3,7 @@ import math
 import _thread
 import pandas as pd
 import numpy as np
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from tqdm import tqdm
 from IPython.display import display, clear_output
 import ipywidgets as widgets
@@ -17,13 +17,14 @@ class SQLLoader:
     RUNNING = "RUNNING"
     DESTROYED = "DESTOYED"
     
-    def __init__(self, file, dbengine, dbhost, dbuser, dbpass, dbport, dbname, dbtable, drop=False, dtype={}, date_fields=[]):
+    def __init__(self, file, dbengine, dbhost, dbuser, dbpass, dbport, dbname, dbtable, drop=False, dtype={}, dtype_db={}, date_fields=[]):
         """
         
         """
         self.file = file
         self.engine = create_engine(f'{dbengine}://{dbuser}:{dbpass}@{dbhost}:{dbport}/{dbname}')
         self.dbtable = dbtable
+        self.dtype_db = dtype_db
         
         self.iteration = 0
         self.registers_inserted = 0
@@ -107,7 +108,8 @@ class SQLLoader:
         temp_df.drop(["_delete","_delete_time"],axis=1).to_sql(
             name=self.dbtable,
             con=self.engine,
-            if_exists="append"
+            if_exists="append",
+            dtype=self.dtype_db
         )
         self.df.iloc[self.registers_inserted : self.registers_inserted + registers] = temp_df
         self.registers_inserted += registers
@@ -123,12 +125,15 @@ class SQLLoader:
             temp_df["_update_time"] = time.time()
 
             indexes_str = map(lambda x: str(x), temp_df.index.to_list())
-            indexes = ",".join(indexes_str)
-            self.engine.execute(f"""
-                UPDATE {self.dbtable}
-                SET _update = _update + 1, _update_time = {time.time()}
-                WHERE index IN ({indexes})
-            """)
+            indexes = ", ".join(indexes_str)
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(text(f"""
+                    UPDATE {self.dbtable} 
+                    SET "_update" = "_update" + 1, "_update_time" = {int(time.time())} 
+                    WHERE "index" IN ({indexes})
+                """))
+            
             self.df[self.df.index.isin(temp_df.index)] = temp_df.copy()
             self.registers_updated += len(temp_df)
             time.sleep(delay)
@@ -143,11 +148,14 @@ class SQLLoader:
             temp_df["_delete_time"] = time.time()
 
             indexes_str = map(lambda x: str(x), temp_df.index.to_list())
-            indexes = ",".join(indexes_str)
-            self.engine.execute(f"""
-                DELETE FROM {self.dbtable}
-                WHERE index IN ({indexes})
-            """)
+            indexes = ", ".join(indexes_str)
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(text(f"""
+                    DELETE FROM {self.dbtable}
+                    WHERE "index" IN ({indexes})
+                """))
+                
             self.df[self.df.index.isin(temp_df.index)] = temp_df.copy()
             self.registers_deleted += len(temp_df)
             time.sleep(delay)
@@ -267,7 +275,14 @@ class SQLLoader:
         self.registers_deleted = 0
         
         try:
-            self.engine.execute(f'SELECT COUNT(*) FROM {self.dbtable}')
-            self.engine.execute(f'DROP TABLE {self.dbtable}')
+            with self.engine.connect() as conn:
+                result = conn.execute(text(f"""
+                    SELECT COUNT(*) FROM {self.dbtable}
+                """))
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(text(f"""
+                    DROP TABLE {self.dbtable}
+                """))
         except:
-            pass
+            print("ERROR!!!")
